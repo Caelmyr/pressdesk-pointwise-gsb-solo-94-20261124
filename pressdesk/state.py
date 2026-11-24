@@ -10,11 +10,12 @@ import shutil
 from threading import RLock
 from uuid import uuid4
 
+import numpy as np
 from werkzeug.exceptions import NotFound
 
 from image_lab.validation import Conflict, Invalid
 
-from . import images
+from . import images, traps
 
 HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 KEY = re.compile(r"[0-9a-f]{16}")
@@ -137,6 +138,7 @@ class Library:
                 {"id": "0000000000000001", "name": "Feather seam", "bounds": [263, 75, 325, 201]},
                 {"id": "0000000000000002", "name": "Paper hairline", "bounds": [268, 90, 310, 193]},
             ]}
+        record["trap"] = None
         directory.mkdir()
         try:
             write(directory / "plate-a.png", images.png(255 - plate_a))
@@ -183,6 +185,82 @@ class Library:
         directory = self.directory(record["id"])
         return directory / "plate-a.png", directory / "plate-b.png"
 
+    def trap_path(self, record, trap_id):
+        available_key(trap_id)
+        return self.directory(record["id"]) / f"trap-{trap_id}.json"
+
+    def load_trap(self, record, trap_id):
+        if trap_id is None:
+            return None
+        document = read(self.trap_path(record, trap_id))
+        directory = self.directory(record["id"])
+        add_a = np.asarray(images.decode((directory / document["mask_a"]).read_bytes(), plate=True)) >= 128
+        add_b = np.asarray(images.decode((directory / document["mask_b"]).read_bytes(), plate=True)) >= 128
+        return {"document": document, "add_a": add_a, "add_b": add_b}
+
+    def active_trap(self, record):
+        """Trap attached to this record (live sheet or saved proof), or None."""
+        trap_id = record.get("trap")
+        return self.load_trap(record, trap_id) if trap_id else None
+
+    def create_trap(self, sheet, revision, plan_id, seam_id, reserve_id, threshold):
+        if plan_id not in traps.PLANS:
+            raise Invalid("Choose one of the listed trap plans.")
+        with self.edit(sheet, revision) as record:
+            settings = record["settings"]
+            seam = images.locate_zone(settings, seam_id)
+            if seam is None:
+                raise Invalid("Select the seam inspection zone to trap.")
+            reserve = images.locate_zone(settings, reserve_id) if reserve_id else None
+            a, b, _ = self.pixels(record)
+            plans, recommended, protected = traps.build_plans(a, b, threshold, seam, reserve)
+            chosen = next(plan for plan in plans if plan["plan"] == plan_id)
+            if not chosen["feasible"]:
+                raise Invalid("That plan cannot seal the seam across the shift grid; "
+                              "choose a plan marked usable.")
+            trap_id = uuid4().hex[:16]
+            directory = self.directory(sheet)
+            mask_a, mask_b = traps.mask_png(chosen["mask_a"], chosen["mask_b"])
+            mask_a_name, mask_b_name = f"trap-{trap_id}-a.png", f"trap-{trap_id}-b.png"
+            document = {
+                "id": trap_id,
+                "created_at": timestamp(),
+                "plan": plan_id,
+                "name": traps.PLAN_NAMES[plan_id],
+                "threshold": int(threshold),
+                "dx_limit": traps.DX_LIMIT,
+                "dy_limit": traps.DY_LIMIT,
+                "shifts": [list(item) for item in traps.SHIFT_GRID],
+                "seam": {"id": seam_id, "name": seam["name"], "bounds": seam["bounds"]},
+                "reserve": None if reserve is None else {"id": reserve_id, "name": reserve["name"],
+                                                          "bounds": reserve["bounds"]},
+                "recommended": recommended,
+                "plans": [{k: v for k, v in plan.items() if not k.startswith("mask_")} for plan in plans],
+                "mask_a": mask_a_name,
+                "mask_b": mask_b_name,
+                "protected_paper": int(np.count_nonzero(protected)),
+            }
+            write(directory / mask_a_name, mask_a.getvalue())
+            write(directory / mask_b_name, mask_b.getvalue())
+            put(self.trap_path(record, trap_id), document)
+            # Older trap files are retained: saved proofs pin their trap id and
+            # must keep rendering the exact plates they were archived with.
+            record["trap"] = trap_id
+        return self.sheet(sheet), document
+
+    def clear_trap(self, sheet, revision):
+        with self.edit(sheet, revision) as record:
+            record["trap"] = None
+        return self.sheet(sheet)
+
+    def trapped_pixels(self, record):
+        """Original-coordinate coverage arrays with the active trap burned in."""
+        a, b, _ = self.pixels(record)
+        trap = self.active_trap(record)
+        if trap is not None:
+            a, b = traps.trapped_plates(a, b, trap["add_a"], trap["add_b"])
+        return a, b, trap
+
     def photo_path(self, record):
         photo = record.get("photo")
         return self.directory(record["id"]) / f'photo-{photo["sha256"]}.png' if photo else None
@@ -212,6 +290,6 @@ class Library:
                 raise Invalid("That inspection zone is not in the current setup.")
             key = uuid4().hex[:16]
             proof = {"id": key, "title": name(title, "Registration proof"), "created_at": timestamp(),
-                     "sheet": record, "zone": zone, "point": point}
+                     "sheet": record, "zone": zone, "point": point, "trap": record.get("trap")}
             put(self.directory(sheet) / f"proof-{key}.json", proof)
             return proof

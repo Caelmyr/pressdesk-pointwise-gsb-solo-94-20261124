@@ -10,7 +10,8 @@ from image_lab.validation import Invalid
 
 MAX_UPLOAD = 12 * 1024 * 1024
 MAX_PIXELS = 2_400_000
-MODES = {"proof", "plate-a", "plate-b", "coverage", "drift", "photo", "difference"}
+MODES = {"proof", "plate-a", "plate-b", "coverage", "drift", "trap-overlay",
+         "photo", "difference"}
 PAPER_CLASS = [247, 243, 234]
 CLASS_COLORS = [PAPER_CLASS, [229, 125, 89], [53, 129, 145], [45, 52, 73]]
 
@@ -87,12 +88,18 @@ def locate_zone(settings, zone_id):
     return next((zone for zone in settings["zones"] if zone["id"] == zone_id), None)
 
 
-def extract_view(a, b, photo, settings, view):
+def extract_view(a, b, photo, settings, view, trap_masks=None, overlay=None):
+    add_a, add_b = trap_masks or (None, None)
+    if add_a is not None:
+        a = np.where(add_a, 255, a)
+        b = np.where(add_b, 255, b)
     moved_b = translate(b, settings["dx"], settings["dy"])
     if view == "plate-a":
         return 255 - a
     if view == "plate-b":
         return 255 - b
+    if view == "trap-overlay":
+        return overlay
     if view == "coverage":
         return np.asarray(CLASS_COLORS, dtype=np.uint8)[coverage_map(a, moved_b, settings["threshold"])]
     if view == "drift":
@@ -116,7 +123,11 @@ def extract_view(a, b, photo, settings, view):
     return image
 
 
-def measure(a, b, settings, zone_id, point):
+def measure(a, b, settings, zone_id, point, trap_masks=None):
+    add_a, add_b = trap_masks or (None, None)
+    if add_a is not None:
+        a = np.where(add_a, 255, a)
+        b = np.where(add_b, 255, b)
     moved_b = translate(b, settings["dx"], settings["dy"])
     threshold = settings["threshold"]
     zone = locate_zone(settings, zone_id)

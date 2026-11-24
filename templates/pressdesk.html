@@ -34,6 +34,7 @@
           <button type="button" data-view="plate-b">Cool plate</button>
           <button type="button" data-view="coverage">Coverage</button>
           <button type="button" data-view="drift">Shift changes</button>
+          <button type="button" data-view="trap-overlay">Trap map</button>
           <button type="button" data-view="photo" hidden>Photo</button>
           <button type="button" data-view="difference" hidden>Photo difference</button>
         </div>
@@ -64,6 +65,15 @@
             <label><input type="color" id="paper" value="#f1e8d6">Paper</label>
           </div>
           <div class="panel-buttons"><button class="primary" id="apply">Preview shifts</button><button class="secondary" id="saveSetup">Save setup</button></div>
+        </section>
+        <section class="panel" aria-labelledby="trapTitle">
+          <div class="panel-heading"><h2 id="trapTitle">Trap workbench</h2><span>INTEGER SPREAD</span></div>
+          <p class="trap-copy">Checks cool-plate shifts from −2 to +2 px in X and −1 to +1 px in Y (15 integer pairs). The seam cannot open a new paper gap; the reserved paper hairline stays uncovered under every shift.</p>
+          <label class="zone-label">Seam zone (two colors meet)<select id="trapSeam" aria-label="Seam zone"></select></label>
+          <label class="zone-label">Paper hairline zone (keep open)<select id="trapReserve" aria-label="Paper hairline zone"></select></label>
+          <div class="panel-buttons"><button class="secondary" id="trapCalc">Build trap plans</button></div>
+          <div id="trapPlans" class="trap-plans" hidden></div>
+          <div id="trapCurrent" class="trap-current" hidden></div>
         </section>
         <section class="panel" aria-labelledby="inspectionTitle">
           <div class="panel-heading"><h2 id="inspectionTitle">Ink coverage</h2><span>IMAGE PIXELS</span></div>

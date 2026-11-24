@@ -8,10 +8,12 @@ const viewCopy = {
   proof: "Warm and cool ink on paper", "plate-a": "Unshifted warm plate",
   "plate-b": "Unshifted cool plate", coverage: "Paper, warm, cool and overprint",
   drift: "Red = newly exposed paper · Blue = changed ink class",
+  "trap-overlay": "Solid red = warm added · Solid teal = cool added · Grey = protected paper hairline",
   photo: "Reference photo in sheet coordinates", difference: "Brightness shows the largest RGB channel difference",
 };
 const S = {sheet: null, sheets: [], settings: null, point: null, zone: "", report: null, reports: [],
-  view: "proof", tool: "", first: null, objectUrl: null, sequence: 0, pendingZone: null};
+  view: "proof", tool: "", first: null, objectUrl: null, sequence: 0, pendingZone: null,
+  trapPlans: null, trapPreviewPlan: "", trap: null};
 
 async function request(path, method = "GET", data) {
   const options = {method};
@@ -68,9 +70,11 @@ function readFields() {
 }
 
 function showViews() {
+  const trapActive = Boolean(S.report ? S.report.trap : (S.trap || (S.trapPlans && S.trapPreviewPlan)));
   for (const button of el("views").querySelectorAll("button")) {
     const view = button.dataset.view;
-    button.hidden = !S.sheet.photo && ["photo", "difference"].includes(view);
+    if (["photo", "difference"].includes(view)) button.hidden = !S.sheet.photo;
+    else if (view === "trap-overlay") button.hidden = !trapActive;
     button.classList.toggle("active", view === S.view);
     button.setAttribute("aria-pressed", String(view === S.view));
   }
@@ -115,6 +119,161 @@ function showZones() {
   el("zoneSelect").value = S.zone;
 }
 
+function showTrapZones() {
+  const zones = S.settings.zones;
+  const keepSeam = el("trapSeam").value;
+  const keepReserve = el("trapReserve").value;
+  const seamOptions = [option("", "Select a zone"), ...zones.map(zone => option(zone.id, zone.name))];
+  const reserveOptions = [option("", "No reserve zone"), ...zones.map(zone => option(zone.id, zone.name))];
+  el("trapSeam").replaceChildren(...seamOptions);
+  el("trapReserve").replaceChildren(...reserveOptions);
+  if (keepSeam && zones.some(zone => zone.id === keepSeam)) el("trapSeam").value = keepSeam;
+  else if (zones.length >= 1) el("trapSeam").value = zones[0].id;
+  if (keepReserve && zones.some(zone => zone.id === keepReserve)) el("trapReserve").value = keepReserve;
+  else if (zones.length >= 2) el("trapReserve").value = zones[1].id;
+}
+
+function showTrapState() {
+  const box = el("trapCurrent");
+  if (!S.trap || typeof S.trap !== "object") {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  box.hidden = false;
+  box.replaceChildren();
+  const title = document.createElement("b");
+  title.textContent = "Adopted: " + S.trap.name;
+  const detail = document.createElement("span");
+  detail.textContent = "Seam “" + S.trap.seam.name + "” · reserve " +
+    (S.trap.reserve ? "“" + S.trap.reserve.name + "”" : "none") +
+    " · checked for " + S.trap.shifts.length + " integer shifts (X ±" + S.trap.dx_limit +
+    ", Y ±" + S.trap.dy_limit + ")";
+  const clear = document.createElement("button");
+  clear.className = "secondary";
+  clear.type = "button";
+  clear.textContent = "Remove trap";
+  clear.onclick = action(async () => {
+    S.sheet = await request(route("/traps"), "DELETE", {revision: S.sheet.revision});
+    S.trap = null;
+    S.trapPlans = null;
+    S.trapPreviewPlan = "";
+    el("trapPlans").hidden = true;
+    if (S.view === "trap-overlay") S.view = "proof";
+    showViews();
+    showTrapState();
+    await refresh(false);
+    status("Trap removed; original plates are active again.");
+  });
+  box.append(title, detail, clear);
+}
+
+function metricLine(label, value) {
+  const cell = document.createElement("div");
+  const name = document.createElement("span");
+  name.textContent = label;
+  const num = document.createElement("b");
+  num.textContent = " " + value;
+  cell.append(name, num);
+  return cell;
+}
+
+function showTrapPlans(data) {
+  const wrap = el("trapPlans");
+  wrap.replaceChildren();
+  wrap.hidden = false;
+  data.plans.forEach(plan => {
+    const card = document.createElement("div");
+    card.className = "plan-card" + (plan.plan === data.recommended ? " recommended" : "") +
+      (plan.feasible ? "" : " disabled");
+    const head = document.createElement("div");
+    head.className = "plan-head";
+    const name = document.createElement("b");
+    name.textContent = plan.name;
+    const tag = document.createElement("span");
+    tag.className = "plan-tag" + (plan.feasible ? "" : " fail");
+    tag.textContent = plan.feasible
+      ? (plan.plan === data.recommended ? "RECOMMENDED" : "USABLE")
+      : "CANNOT SEAL";
+    head.append(name, tag);
+    const metrics = document.createElement("div");
+    metrics.className = "plan-metrics";
+    metrics.append(metricLine("Warm plate gains", plan.add_warm + " px"),
+      metricLine("Cool plate gains", plan.add_cool + " px"),
+      metricLine("New dark overprint", plan.overprint + " px"),
+      metricLine("Side imbalance", plan.imbalance + " px"));
+    const sides = document.createElement("div");
+    sides.className = "plan-sides";
+    const total = plan.overprint_cool_side + plan.overprint_warm_side || 1;
+    const left = document.createElement("i");
+    left.style.background = "#d45436";
+    left.style.width = (100 * plan.overprint_cool_side / total) + "%";
+    left.title = "Overprint on the cool side of the seam: " + plan.overprint_cool_side + " px";
+    const right = document.createElement("i");
+    right.style.background = "#287f8d";
+    right.style.width = (100 * plan.overprint_warm_side / total) + "%";
+    right.title = "Overprint on the warm side of the seam: " + plan.overprint_warm_side + " px";
+    sides.append(left, right);
+    card.append(head, metrics, sides);
+    if (!plan.feasible) {
+      const fails = document.createElement("p");
+      fails.className = "plan-fails";
+      const first = plan.failures.slice(0, 3)
+        .map(item => `(${item.dx},${item.dy}) gap ${item.gaps}/fill ${item.hairline_fills}`).join(" · ");
+      fails.textContent = "Fails e.g. " + first + (plan.failures.length > 3 ? " …" : "");
+      card.append(fails);
+    }
+    if (plan.feasible) {
+      const buttons = document.createElement("div");
+      buttons.className = "panel-buttons";
+      const preview = document.createElement("button");
+      preview.className = "secondary";
+      preview.type = "button";
+      preview.textContent = "Preview on map";
+      preview.onclick = action(async () => {
+        S.trapPreviewPlan = plan.plan;
+        if (S.view !== "trap-overlay") {
+          S.view = "trap-overlay";
+          showViews();
+        }
+        await refresh();
+        status(plan.name + " trap preview shown. Nothing is saved until you adopt it.");
+      });
+      const adopt = document.createElement("button");
+      adopt.className = "primary";
+      adopt.type = "button";
+      adopt.textContent = "Adopt plan";
+      adopt.onclick = action(async () => {
+        const response = await request(route("/traps"), "POST", {
+          revision: S.sheet.revision, plan: plan.plan,
+          seam: el("trapSeam").value, reserve: el("trapReserve").value || null,
+          threshold: S.settings.threshold,
+        });
+        S.sheet = response.sheet;
+        S.trap = response.trap;
+        S.trapPlans = null;
+        S.trapPreviewPlan = "";
+        wrap.hidden = true;
+        showTrapState();
+        await refresh(false);
+        status(plan.name + " adopted. Downloads now use the trapped plates at unshifted coordinates.");
+      });
+      buttons.append(preview, adopt);
+      card.append(buttons);
+    }
+    wrap.append(card);
+  });
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  legend.innerHTML = '<span><i style="background:#d45436"></i>warm added</span>' +
+    '<span><i style="background:#287f8d"></i>cool added</span>' +
+    '<span><i style="background:#2d3449"></i>both added</span>' +
+    '<span><i style="background:#978d7a"></i>protected paper</span>' +
+    '<span><i style="background:#f1cebe"></i>original warm</span>' +
+    '<span><i style="background:#c5dfe3"></i>original cool</span>';
+  wrap.append(legend);
+}
+
 function addLink(label, suffix) {
   const link = document.createElement("a");
   link.textContent = label;
@@ -137,7 +296,8 @@ function showArchive() {
     addLink("Coverage CSV", "/reports/" + S.report.id + "/coverage.csv");
   }
   const frozen = Boolean(S.report);
-  fieldNames.concat(["apply", "saveSetup", "saveProof", "zoneTool", "addPhoto"]).forEach(id => { el(id).disabled = frozen; });
+  fieldNames.concat(["apply", "saveSetup", "saveProof", "zoneTool", "addPhoto",
+    "trapCalc", "trapSeam", "trapReserve"]).forEach(id => { el(id).disabled = frozen; });
 }
 
 function showMeasurement(data) {
@@ -206,6 +366,14 @@ function showMeasurement(data) {
 async function refresh(image = true) {
   const sequence = ++S.sequence;
   const payload = {settings: S.settings, zone: S.zone || null, point: S.point};
+  if (!S.report && S.trapPlans && S.trapPreviewPlan) {
+    payload.trap_preview = {
+      plan: S.trapPreviewPlan,
+      seam: el("trapSeam").value,
+      reserve: el("trapReserve").value || null,
+      threshold: S.settings.threshold,
+    };
+  }
   const query = reportQuery();
   const measure = request(route("/measure") + query, "POST", payload);
   const view = image ? request(route("/view/" + S.view) + query, "POST", payload) : null;
@@ -234,6 +402,9 @@ async function openSheet(sheet, view = "proof") {
   S.report = null;
   S.point = null;
   S.zone = "";
+  S.trapPlans = null;
+  S.trapPreviewPlan = "";
+  S.trap = null;
   setTool("");
   localStorage.setItem("pressdesk-sheet", sheet.id);
   el("dimensions").textContent = sheet.width + " × " + sheet.height + " px" + (sheet.synthetic ? " · SYNTHETIC" : "");
@@ -241,8 +412,15 @@ async function openSheet(sheet, view = "proof") {
   el("empty").hidden = true;
   el("sheetSelect").value = sheet.id;
   S.reports = await request(route("/reports"));
+  if (sheet.trap) {
+    S.trap = await request(route("/traps/" + sheet.trap), "GET").catch(() => null);
+  } else {
+    S.trap = null;
+  }
   settingsToFields();
   showZones();
+  showTrapZones();
+  showTrapState();
   showViews();
   showArchive();
   await refresh();
@@ -366,16 +544,43 @@ el("reportSelect").onchange = action(async () => {
   S.settings = structuredClone(S.sheet.settings);
   S.point = S.report.point;
   S.zone = S.report.zone || "";
+  S.trapPlans = null;
+  S.trapPreviewPlan = "";
+  S.trap = S.report.trap || null;
+  if (typeof S.trap !== "object") S.trap = null;
+  if ((!S.trap || S.report.trap === null) && S.view === "trap-overlay") S.view = "proof";
   if (!S.sheet.photo && ["photo", "difference"].includes(S.view)) S.view = "proof";
   setTool("");
   settingsToFields();
   showZones();
+  showTrapZones();
+  showTrapState();
+  el("trapPlans").hidden = true;
   showViews();
   showArchive();
   await refresh();
   status("Saved proof opened.");
 });
 el("addPhoto").onclick = () => openDialog("photoDialog");
+el("trapCalc").onclick = action(async () => {
+  const seam = el("trapSeam").value;
+  if (!seam) throw new Error("Select the seam zone to trap.");
+  const data = await request(route("/traps/preview"), "POST", {
+    seam, reserve: el("trapReserve").value || null, threshold: S.settings.threshold,
+  });
+  S.trapPlans = data;
+  S.trapPreviewPlan = data.recommended || data.plans.find(plan => plan.feasible)?.plan || "";
+  showTrapPlans(data);
+  if (S.trapPreviewPlan) {
+    S.view = "trap-overlay";
+    showViews();
+    await refresh();
+  }
+  status(data.recommended
+    ? "Trap plans built for all " + data.shifts.length + " integer shifts. Recommendation: " +
+      data.plans.find(plan => plan.plan === data.recommended).name + "."
+    : "No plan can seal this seam without filling the reserved paper under every shift.");
+});
 document.querySelectorAll("dialog .close").forEach(button => {
   button.onclick = () => button.closest("dialog").close();
 });
@@ -394,6 +599,7 @@ submitForm("nameForm", async data => {
     S.zone = zone.id;
     S.pendingZone = null;
     showZones();
+    showTrapZones();
     await refresh(false);
     status("Zone marked. Save the setup to keep it on the sheet.");
     return;
