@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PressDesk · Two-ink registration</title>
+  <link rel="stylesheet" href="/static/press.css">
+  <script src="/static/press.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/"><span class="mark"><i></i><i></i></span><span>PressDesk<small>PRINT PROOF WORKBENCH</small></span></a>
+    <a class="top-link" href="/prepare">Prepare photo ↗</a>
+  </header>
+  <main>
+    <section class="intro">
+      <div><h1>Two-ink registration</h1></div>
+      <div class="entry-actions"><button class="secondary" id="showImport">Import plates</button><button class="primary" id="demo">Open practice sheet</button></div>
+    </section>
+    <p role="status" id="status" class="status" hidden></p>
+    <div class="empty" id="empty">
+      <div class="print-preview" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div><h2>Start with two separations</h2><p>Bring two equally sized grayscale PNG plates, or use the synthetic Estuary sheet to inspect a join between warm and cool ink.</p></div>
+    </div>
+    <div class="workspace" id="workspace" hidden>
+      <section class="canvas-panel" aria-label="Proof image">
+        <div class="row sheet-row">
+          <label>Sheet<select id="sheetSelect" aria-label="Open sheet"></select></label>
+          <span id="dimensions" class="mono"></span>
+        </div>
+        <div class="tabs" id="views" role="group" aria-label="Image view">
+          <button type="button" data-view="proof">Proof</button>
+          <button type="button" data-view="plate-a">Warm plate</button>
+          <button type="button" data-view="plate-b">Cool plate</button>
+          <button type="button" data-view="coverage">Coverage</button>
+          <button type="button" data-view="drift">Shift changes</button>
+          <button type="button" data-view="photo" hidden>Photo</button>
+          <button type="button" data-view="difference" hidden>Photo difference</button>
+        </div>
+        <div class="stage"><div class="image-wrap" id="imageWrap">
+          <img id="sheetView" alt="Two-ink proof" draggable="false">
+          <svg id="marks" aria-hidden="true"></svg>
+        </div></div>
+        <div class="row canvas-footer">
+          <div class="tools"><button class="secondary" id="probeTool">Probe pixel</button><button class="secondary" id="zoneTool">Mark zone</button></div>
+          <span id="viewHint">Warm and cool ink on paper</span>
+        </div>
+        <section class="profile" id="profile" hidden aria-label="Coverage row">
+          <div class="row"><h2 id="profileTitle">Coverage along the row</h2><span class="mono" id="pointRead"></span></div>
+          <canvas width="750" height="100" id="profileCanvas" role="img" aria-label="Warm and cool ink coverage along the selected row"></canvas>
+        </section>
+      </section>
+      <aside class="inspection">
+        <section class="panel" aria-labelledby="registrationTitle">
+          <div class="panel-heading"><h2 id="registrationTitle">Registration</h2><span>COOL PLATE</span></div>
+          <div class="controls">
+            <label>X shift <input id="dx" type="number" min="-32" max="32" value="0"></label>
+            <label>Y shift <input id="dy" type="number" min="-32" max="32" value="0"></label>
+            <label>Ink threshold <input id="threshold" type="number" min="1" max="255" value="128"></label>
+          </div>
+          <div class="swatches">
+            <label><input type="color" id="ink_a" value="#d45436">Warm ink</label>
+            <label><input type="color" id="ink_b" value="#287f8d">Cool ink</label>
+            <label><input type="color" id="paper" value="#f1e8d6">Paper</label>
+          </div>
+          <div class="panel-buttons"><button class="primary" id="apply">Preview shifts</button><button class="secondary" id="saveSetup">Save setup</button></div>
+        </section>
+        <section class="panel" aria-labelledby="inspectionTitle">
+          <div class="panel-heading"><h2 id="inspectionTitle">Ink coverage</h2><span>IMAGE PIXELS</span></div>
+          <label class="zone-label">Inspection zone<select id="zoneSelect" aria-label="Inspection zone"></select></label>
+          <div class="coverage" id="coverageBar" role="img" aria-label="Ink coverage proportions"></div>
+          <div class="coverage-grid" id="coverageGrid"></div>
+          <p class="shift-summary" id="shiftSummary"></p>
+        </section>
+        <section class="panel" aria-labelledby="archiveTitle">
+          <div class="panel-heading"><h2 id="archiveTitle">Proof archive</h2></div>
+          <label class="zone-label">View saved proof<select id="reportSelect" aria-label="View saved proof"></select></label>
+          <div class="panel-buttons"><button class="secondary" id="saveProof">Save proof</button><button class="secondary" id="addPhoto">Add proof photo</button></div>
+          <div class="links" id="downloads"></div>
+        </section>
+      </aside>
+    </div>
+  </main>
+  <dialog id="plateDialog">
+    <form id="plateForm">
+      <h2>Import a two-ink sheet</h2>
+      <p>Use opaque grayscale PNGs with matching dimensions. White means no ink.</p>
+      <label>Sheet name<input name="title" maxlength="90" placeholder="New proof"></label>
+      <label>Warm plate<input type="file" name="plate_a" accept="image/png" required></label>
+      <label>Cool plate<input type="file" name="plate_b" accept="image/png" required></label>
+      <div class="panel-buttons"><button type="submit" class="primary">Open sheet</button><button class="secondary close" type="button">Cancel</button></div>
+      <p role="alert" class="form-error"></p>
+    </form>
+  </dialog>
+  <dialog id="nameDialog">
+    <form id="nameForm">
+      <h2 id="nameTitle">Name inspection zone</h2>
+      <label>Name<input name="title" maxlength="90"></label>
+      <div class="panel-buttons"><button type="submit" class="primary">Save</button><button class="secondary close" type="button">Cancel</button></div>
+      <p role="alert" class="form-error"></p>
+    </form>
+  </dialog>
+  <dialog id="photoDialog">
+    <form id="photoForm">
+      <h2>Add a photographed proof</h2>
+      <p>Use the same crop and pixel dimensions as the two separations.</p>
+      <label>Photo<input type="file" name="photo" accept="image/png,image/jpeg" required></label>
+      <div class="panel-buttons"><button type="submit" class="primary">Add photo</button><button class="secondary close" type="button">Cancel</button></div>
+      <p role="alert" class="form-error"></p>
+    </form>
+  </dialog>
+</body>
+</html>
