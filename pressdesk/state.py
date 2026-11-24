@@ -39,10 +39,33 @@ def coordinates(point, width, height):
     return [integer(point[0], 0, width - 1, "X"), integer(point[1], 0, height - 1, "Y")]
 
 
+def half_pixel(value, low, high, title):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise Invalid(f"{title} must be a number in half-pixel steps.")
+    result = float(value)
+    if not low <= result <= high or abs(result * 2 - round(result * 2)) > 1e-9:
+        raise Invalid(f"{title} must be in half-pixel steps from {low} to {high}.")
+    return round(result * 2) / 2
+
+
 def color(value, title):
     if not isinstance(value, str) or HEX.fullmatch(value) is None:
         raise Invalid(f"{title} must use a six-digit RGB color.")
     return value.lower()
+
+
+def adoption(value, record):
+    """The half-pixel shift accepted against one proof photo, kept for later reference."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise Invalid("The adopted shift must be a JSON object.")
+    photo = record.get("photo")
+    if photo is None or value.get("photo") not in (None, photo["sha256"]):
+        return None
+    return {"dx": half_pixel(value.get("dx"), -32, 32, "Adopted X shift"),
+            "dy": half_pixel(value.get("dy"), -32, 32, "Adopted Y shift"),
+            "photo": photo["sha256"]}
 
 
 def settings(record, changes):
@@ -70,12 +93,13 @@ def settings(record, changes):
         normalized.append({"id": key, "name": name(zone.get("name"), "Inspection zone"),
                            "bounds": [x0, y0, x1, y1]})
     return {
-        "dx": integer(data["dx"], -32, 32, "X shift"),
-        "dy": integer(data["dy"], -32, 32, "Y shift"),
+        "dx": half_pixel(data["dx"], -32, 32, "X shift"),
+        "dy": half_pixel(data["dy"], -32, 32, "Y shift"),
         "threshold": integer(data["threshold"], 1, 255, "Ink threshold"),
         "ink_a": color(data["ink_a"], "Warm ink"),
         "ink_b": color(data["ink_b"], "Cool ink"),
         "paper": color(data["paper"], "Paper"),
+        "adopted": adoption(data.get("adopted"), record),
         "zones": normalized,
     }
 

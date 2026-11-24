@@ -9,7 +9,7 @@ from flask import Blueprint, jsonify, render_template, request, send_file
 from image_lab import create_app as create_preparation
 from image_lab.validation import Invalid
 
-from . import images, state
+from . import fit, images, state
 
 
 def body():
@@ -109,6 +109,24 @@ def create_app(root):
         if view in {"photo", "difference"} and photo is None:
             raise Invalid("Add a proof photo to use this view.")
         return image_response(BytesIO(images.png(images.extract_view(a, b, photo, options, view))), f"{view}.png")
+
+    @desk.post("/sheets/<sheet>/recommend")
+    def recommend(sheet):
+        record, stored = context(sheet)
+        payload = body()
+        options = record["settings"] if stored else state.settings(record, payload.get("settings", {}))
+        if record.get("photo") is None:
+            raise Invalid("Add the trial proof photo before reading the cool plate.")
+        bounds = payload.get("bounds")
+        if not isinstance(bounds, list) or len(bounds) != 4:
+            raise Invalid("Mark a zone over the cool contour first.")
+        x0, y0, x1, y1 = [state.integer(value, 0, 10 ** 9, "Zone") for value in bounds]
+        if not (0 <= x0 < x1 <= record["width"] and 0 <= y0 < y1 <= record["height"]):
+            raise Invalid("The zone must sit inside the sheet.")
+        a, b, photo = library.pixels(record, with_photo=True)
+        return jsonify(fit.analyse(a, b, photo, options, [x0, y0, x1, y1],
+                                   (options["dx"], options["dy"]),
+                                   evaluate=bool(payload.get("evaluate"))))
 
     @desk.post("/sheets/<sheet>/measure")
     def measure(sheet):

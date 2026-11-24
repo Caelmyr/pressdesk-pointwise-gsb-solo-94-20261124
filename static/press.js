@@ -10,8 +10,10 @@ const viewCopy = {
   drift: "Red = newly exposed paper · Blue = changed ink class",
   photo: "Reference photo in sheet coordinates", difference: "Brightness shows the largest RGB channel difference",
 };
+const precision = value => (Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1));
 const S = {sheet: null, sheets: [], settings: null, point: null, zone: "", report: null, reports: [],
-  view: "proof", tool: "", first: null, objectUrl: null, sequence: 0, pendingZone: null};
+  view: "proof", tool: "", first: null, objectUrl: null, sequence: 0, pendingZone: null,
+  reading: null, adopted: false};
 
 async function request(path, method = "GET", data) {
   const options = {method};
@@ -55,7 +57,7 @@ function option(value, label) {
 }
 
 function settingsToFields() {
-  fieldNames.forEach(key => { el(key).value = S.settings[key]; });
+  fieldNames.forEach(key => { el(key).value = key === "dx" || key === "dy" ? precision(S.settings[key]) : S.settings[key]; });
 }
 
 function readFields() {
@@ -64,6 +66,8 @@ function readFields() {
     if (!el(key).checkValidity() || !el(key).value) throw new Error("Check " + el(key).labels[0].textContent.trim() + ".");
     changed[key] = el(key).type === "number" ? Number(el(key).value) : el(key).value;
   });
+  const adopted = changed.adopted;
+  if (adopted && (adopted.dx !== changed.dx || adopted.dy !== changed.dy)) delete changed.adopted;
   return changed;
 }
 
@@ -103,9 +107,24 @@ function drawMarks() {
     overlay.append(mark("rect", {x, y, width: x1 - x, height: y1 - y,
       fill: "none", stroke: "#2a3a3b", "stroke-width": 1, "stroke-dasharray": "4 3", "vector-effect": "non-scaling-stroke"}));
   }
+  drawEdgeMarks(overlay);
   if (S.point || S.first) {
     const [x, y] = S.first || S.point;
     overlay.append(mark("circle", {cx: x + .5, cy: y + .5, r: 4, fill: "#273c38", stroke: "#fff", "stroke-width": 2, "vector-effect": "non-scaling-stroke"}));
+  }
+}
+
+function drawEdgeMarks(overlay) {
+  const reading = S.reading;
+  const segments = reading?.segments || [];
+  el("edgeLegend").hidden = !segments.length;
+  for (const segment of segments) {
+    const color = segment.structure === "fine" ? "#d9a126" : "#b8402d";
+    overlay.append(mark("line", {x1: segment.x0, y1: segment.y0, x2: segment.x1, y2: segment.y1,
+      stroke: "#fffdf7", "stroke-width": 4, "vector-effect": "non-scaling-stroke", "stroke-linecap": "round"}));
+    overlay.append(mark("line", {x1: segment.x0, y1: segment.y0, x2: segment.x1, y2: segment.y1,
+      stroke: color, "stroke-width": 2, "vector-effect": "non-scaling-stroke", "stroke-linecap": "round",
+      "stroke-dasharray": segment.structure === "fine" ? "3 2" : "none"}));
   }
 }
 
@@ -137,7 +156,92 @@ function showArchive() {
     addLink("Coverage CSV", "/reports/" + S.report.id + "/coverage.csv");
   }
   const frozen = Boolean(S.report);
-  fieldNames.concat(["apply", "saveSetup", "saveProof", "zoneTool", "addPhoto"]).forEach(id => { el(id).disabled = frozen; });
+  fieldNames.concat(["apply", "saveSetup", "saveProof", "zoneTool", "addPhoto",
+    "readOffset", "adoptOffset"]).forEach(id => { el(id).disabled = frozen; });
+}
+
+function showPointSource(p) {
+  const parts = [];
+  if (p.outside) {
+    parts.push("This point lies outside the original cool plate; its cool ink counts as paper white.");
+  } else {
+    const shares = (p.cool_sources || []).map(source =>
+      "<b>(" + source.x + ", " + source.y + ")</b> " + Math.round(source.weight * 100) + "% = " + source.value);
+    if (shares.length) parts.push("Cool ink here came from " + shares.join(" · "));
+    if (p.cool_paper > 0) parts.push('<span class="paper">' + Math.round(p.cool_paper * 100) + "% paper white from outside the plate</span>");
+  }
+  el("pointSource").innerHTML = parts.join("<br>") || "No cool-ink source at this point.";
+}
+
+function readOffsetLabel(value) {
+  return value === null || value === undefined ? "no evidence" : (value > 0 ? "+" : "") + precision(value);
+}
+
+function showReading(data) {
+  S.reading = data.ok ? data : null;
+  el("adoptOffset").disabled = !(data.ok && data.adoptable && data.mode !== "evaluate");
+  el("offsetRead").classList.remove("warn", "ready");
+  const detail = el("offsetDetail");
+  detail.replaceChildren();
+  if (!data.ok) {
+    el("offsetRead").textContent = data.message || "No half-pixel reading from this zone.";
+    el("offsetRead").classList.add("warn");
+    el("edgeLegend").hidden = true;
+    drawMarks();
+    return;
+  }
+  const adopting = data.mode === "evaluate";
+  const sx = data.shift.x, sy = data.shift.y;
+  const lead = adopting
+    ? "Actual print at X " + readOffsetLabel(data.current.x) + ", Y " + readOffsetLabel(data.current.y) + "."
+    : "Suggested cool-plate shift X " + readOffsetLabel(sx) + ", Y " + readOffsetLabel(sy) + " (half-pixel grid).";
+  el("offsetRead").innerHTML = "<strong>" + lead + "</strong>" +
+    (data.message ? " " + data.message : "");
+  if (data.adoptable && !adopting) el("offsetRead").classList.add("ready");
+  else if (!data.adoptable) el("offsetRead").classList.add("warn");
+  const rows = [];
+  const axisRow = (axis, key) => {
+    const item = data.axes[key];
+    rows.push([axis + " axis", item.evidence ? (item.points + " cool-edge points") : "no evidence"]);
+  };
+  axisRow("X", "x");
+  axisRow("Y", "y");
+  for (const [key, label] of [["main", "Main contour"], ["fine", "Fine line"]]) {
+    const item = data.structures[key];
+    if (!item || item.max === null) continue;
+    rows.push([label + " worst", item.max.toFixed(2) + " px over " + item.points + " points"]);
+  }
+  rows.push(["Adopt rule", "main and fine both ≤ " + data.limit.toFixed(1) + " px"]);
+  for (const [label, value] of rows) {
+    const row = document.createElement("span");
+    const name = document.createElement("em");
+    name.textContent = label;
+    const output = document.createElement("b");
+    output.textContent = value;
+    row.append(name, output);
+    detail.append(row);
+  }
+  detail.hidden = false;
+  drawMarks();
+}
+
+function setAdopted(adopted) {
+  S.adopted = adopted;
+  el("readOffset").textContent = adopted ? "Check landed ink" : "Read cool offset";
+}
+
+function applyReading() {
+  const data = S.reading;
+  if (!data || !data.adoptable) return;
+  const x = data.shift.x ?? Number(el("dx").value);
+  const y = data.shift.y ?? Number(el("dy").value);
+  S.settings.dx = x;
+  S.settings.dy = y;
+  S.settings.adopted = {dx: x, dy: y, photo: S.sheet.photo?.sha256 || null};
+  settingsToFields();
+  setAdopted(true);
+  el("adoptOffset").disabled = true;
+  el("offsetRead").classList.add("ready");
 }
 
 function showMeasurement(data) {
@@ -167,9 +271,10 @@ function showMeasurement(data) {
   el("profile").hidden = !data.probe;
   if (!data.probe) return;
   const p = data.probe;
-  const cool = p.b_source ? " from " + p.b_source.join(", ") : " outside source";
+  const cool = p.outside ? " · cool from paper white" : "";
   el("profileTitle").textContent = "Coverage along row " + p.y;
   el("pointRead").textContent = "X " + p.x + " · warm " + p.a + " · cool " + p.b + cool;
+  showPointSource(p);
   const canvas = el("profileCanvas"), context = canvas.getContext("2d");
   const width = canvas.width, height = canvas.height;
   context.clearRect(0, 0, width, height);
@@ -221,6 +326,32 @@ async function refresh(image = true) {
   drawMarks();
 }
 
+function readingZone() {
+  const zone = S.settings.zones.find(item => item.id === S.zone);
+  if (zone) return zone.bounds;
+  if (S.pendingZone) return S.pendingZone.bounds;
+  return null;
+}
+
+async function readOffset(evaluate = false) {
+  const bounds = readingZone();
+  if (!bounds) {
+    status("Mark a zone across the cool contour first, then read the offset.", true);
+    return;
+  }
+  if (!S.sheet.photo) {
+    status("Add the trial proof photo before reading the cool plate.", true);
+    return;
+  }
+  evaluate = evaluate || S.adopted;
+  if (evaluate) await refresh(false);
+  const data = await request(route("/recommend") + reportQuery(), "POST",
+    {settings: S.settings, bounds, evaluate});
+  showReading(data);
+  if (data.ok) status("");
+  else status(data.message || "No half-pixel reading from this zone.", true);
+}
+
 async function getSheets() {
   S.sheets = await request("/sheets");
   el("sheetSelect").replaceChildren(...S.sheets.map(sheet => option(sheet.id, sheet.title)));
@@ -234,6 +365,8 @@ async function openSheet(sheet, view = "proof") {
   S.report = null;
   S.point = null;
   S.zone = "";
+  S.reading = null;
+  setAdopted(Boolean(sheet.settings.adopted));
   setTool("");
   localStorage.setItem("pressdesk-sheet", sheet.id);
   el("dimensions").textContent = sheet.width + " × " + sheet.height + " px" + (sheet.synthetic ? " · SYNTHETIC" : "");
@@ -303,6 +436,10 @@ el("views").onclick = action(async event => {
 });
 el("apply").onclick = action(async () => {
   S.settings = readFields();
+  S.reading = null;
+  setAdopted(Boolean(S.settings.adopted));
+  el("adoptOffset").disabled = true;
+  el("edgeLegend").hidden = true;
   await refresh();
   status("Proof recalculated.");
 });
@@ -310,12 +447,23 @@ el("saveSetup").onclick = action(async () => {
   const settings = readFields();
   S.sheet = await request(route("/settings"), "PUT", {revision: S.sheet.revision, settings});
   S.settings = structuredClone(S.sheet.settings);
+  setAdopted(Boolean(S.settings.adopted));
   await refresh();
   status("Setup saved.");
 });
 el("zoneSelect").onchange = action(async () => {
   S.zone = el("zoneSelect").value;
+  S.reading = null;
+  el("adoptOffset").disabled = true;
+  el("edgeLegend").hidden = true;
   await refresh(false);
+});
+el("readOffset").onclick = action(() => readOffset(false));
+el("adoptOffset").onclick = action(async () => {
+  applyReading();
+  await readOffset(true);
+  status("Shift adopted at " + readOffsetLabel(S.settings.dx) + ", " + readOffsetLabel(S.settings.dy) +
+    ". Below is where the ink actually landed; Save setup keeps the half-pixel value.");
 });
 el("zoneTool").onclick = () => {
   if (S.settings.zones.length >= 8) return status("This sheet already has eight zones.", true);
@@ -366,6 +514,10 @@ el("reportSelect").onchange = action(async () => {
   S.settings = structuredClone(S.sheet.settings);
   S.point = S.report.point;
   S.zone = S.report.zone || "";
+  S.reading = null;
+  setAdopted(Boolean(S.sheet.settings.adopted));
+  el("adoptOffset").disabled = true;
+  el("edgeLegend").hidden = true;
   if (!S.sheet.photo && ["photo", "difference"].includes(S.view)) S.view = "proof";
   setTool("");
   settingsToFields();

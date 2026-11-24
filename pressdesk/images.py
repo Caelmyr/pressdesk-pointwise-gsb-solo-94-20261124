@@ -47,16 +47,64 @@ def decode(raw, plate=False):
         raise Invalid("Choose an opaque grayscale PNG plate or an opaque PNG/JPEG proof photo.") from None
 
 
-def translate(plate, dx, dy):
-    """Move coverage in sheet coordinates, with unprinted paper outside the plate."""
+def bilinear(plate, x, y):
+    """Sample coverage at fractional sheet coordinates; anything outside the plate is paper."""
+    plate = np.asarray(plate, dtype=np.float32)
     height, width = plate.shape
-    moved = np.zeros_like(plate)
-    if abs(dx) >= width or abs(dy) >= height:
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
+    tx = (x - x0).astype(np.float32)
+    ty = (y - y0).astype(np.float32)
+
+    def gather(yy, xx):
+        inside = (yy >= 0) & (yy < height) & (xx >= 0) & (xx < width)
+        values = np.where(inside, plate[np.clip(yy, 0, height - 1), np.clip(xx, 0, width - 1)], 0.0)
+        return values.astype(np.float32)
+
+    v00 = gather(y0, x0)
+    v01 = gather(y0, x0 + 1)
+    v10 = gather(y0 + 1, x0)
+    v11 = gather(y0 + 1, x0 + 1)
+    return (1 - tx) * (1 - ty) * v00 + tx * (1 - ty) * v01 + (1 - tx) * ty * v10 + tx * ty * v11
+
+
+def translate(plate, dx, dy):
+    """Move coverage in sheet coordinates, keeping half-pixel shifts and paper outside the plate."""
+    height, width = plate.shape
+    whole_x, whole_y = round(float(dx)), round(float(dy))
+    if abs(float(dx) - whole_x) < 1e-9 and abs(float(dy) - whole_y) < 1e-9:
+        moved = np.zeros_like(plate)
+        if abs(whole_x) >= width or abs(whole_y) >= height:
+            return moved
+        x0, y0 = max(0, -whole_x), max(0, -whole_y)
+        x1, y1 = min(width, width - whole_x), min(height, height - whole_y)
+        moved[y0 + whole_y:y1 + whole_y, x0 + whole_x:x1 + whole_x] = plate[y0:y1, x0:x1]
         return moved
-    x0, y0 = max(0, -dx), max(0, -dy)
-    x1, y1 = min(width, width - dx), min(height, height - dy)
-    moved[y0 + dy:y1 + dy, x0 + dx:x1 + dx] = plate[y0:y1, x0:x1]
-    return moved
+    xs = np.arange(width, dtype=np.float32)[None, :] - float(dx)
+    ys = np.arange(height, dtype=np.float32)[:, None] - float(dy)
+    return bilinear(plate, xs, ys).astype(np.float32)
+
+
+def source_weights(plate, dx, dy, x, y):
+    """Original cool-plate pixels and weights behind one sheet coordinate."""
+    height, width = plate.shape
+    source_x, source_y = x - float(dx), y - float(dy)
+    x0, y0 = int(np.floor(source_x)), int(np.floor(source_y))
+    tx, ty = source_x - x0, source_y - y0
+    entries = []
+    paper = 0.0
+    for offset_y, weight_y in ((0, 1 - ty), (1, ty)):
+        for offset_x, weight_x in ((0, 1 - tx), (1, tx)):
+            weight = float(weight_x * weight_y)
+            if weight <= 1e-9:
+                continue
+            sx, sy = x0 + offset_x, y0 + offset_y
+            if 0 <= sx < width and 0 <= sy < height:
+                entries.append({"x": sx, "y": sy, "weight": round(weight, 4),
+                                "value": int(plate[sy, sx])})
+            else:
+                paper += weight
+    return source_x, source_y, entries, round(paper, 4)
 
 
 def rgb(hex_value):
@@ -134,12 +182,21 @@ def measure(a, b, settings, zone_id, point):
     }
     if point is not None:
         x, y = point
-        bx, by = x - settings["dx"], y - settings["dy"]
         width, height = a.shape[1], a.shape[0]
-        response["probe"] = {"x": x, "y": y, "a": int(a[y, x]), "b": int(moved_b[y, x]),
-                             "b_source": [bx, by] if 0 <= bx < width and 0 <= by < height else None}
+        source_x, source_y, entries, paper = source_weights(b, settings["dx"], settings["dy"], x, y)
+        warm_cut = int(a[y, x]) >= threshold
+        response["probe"] = {
+            "x": x, "y": y, "a": int(a[y, x]), "b": int(round(float(moved_b[y, x]))),
+            "b_source": [round(source_x, 2), round(source_y, 2)],
+            "warm_class": warm_cut,
+            "cool_class": int(moved_b[y, x]) >= threshold,
+            "cool_sources": entries,
+            "cool_paper": paper,
+            "outside": paper >= 0.999,
+        }
         xs = np.unique(np.append(np.linspace(0, width - 1, min(width, 320), dtype=int), x))
-        response["profile"] = {"x": xs.tolist(), "a": a[y, xs].tolist(), "b": moved_b[y, xs].tolist()}
+        response["profile"] = {"x": xs.tolist(), "a": a[y, xs].tolist(),
+                               "b": moved_b[y, xs].round(1).tolist()}
     return response
 
 
